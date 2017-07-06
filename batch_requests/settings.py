@@ -5,7 +5,7 @@
 '''
 
 from django.conf import settings
-from django.utils.importlib import import_module
+from importlib import import_module
 import multiprocessing
 
 DEFAULTS = {

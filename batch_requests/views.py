@@ -34,17 +34,17 @@ def get_response(wsgi_request):
     try:
         resp = view(*args, **kwargs)
     except Exception as exc:
-        resp = HttpResponseServerError(content=exc.message)
+        resp = HttpResponseServerError(content=exc)
 
     headers = dict(resp._headers.values())
     # Convert HTTP response into simple dict type.
     d_resp = {"status_code": resp.status_code, "reason_phrase": resp.reason_phrase,
               "headers": headers}
     try:
-        d_resp.update({"body": resp.content})
+        d_resp.update({"body": resp.content.decode()})
     except ContentNotRenderedError:
         resp.render()
-        d_resp.update({"body": resp.content})
+        d_resp.update({"body": resp.content.decode()})
 
     # Check if we need to send across the duration header.
     if _settings.ADD_DURATION_HEADER:
@@ -59,7 +59,7 @@ def get_wsgi_requests(request):
         WSGIRequest object for each.
     '''
     valid_http_methods = ["get", "post", "put", "patch", "delete", "head", "options", "connect", "trace"]
-    requests = json.loads(request.body)
+    requests = json.loads(request.body.decode())
 
     if type(requests) not in (list, tuple):
         raise BadBatchRequest("The body of batch request should always be list!")
@@ -117,12 +117,28 @@ def handle_batch_requests(request, *args, **kwargs):
         return HttpResponseBadRequest(content=brx.message)
 
     # Fire these WSGI requests, and collect the response for the same.
-    response = execute_requests(wsgi_requests)
+    from django.db import transaction
+
+    try:
+        with transaction.atomic():
+            response = execute_requests(wsgi_requests)
+            final_status, final_body, final_type = check_response(response)
+            if not (200 <= final_status < 300):
+                raise
+    except Exception as exc:
+        pass
 
     # Evrything's done, return the response.
     resp = HttpResponse(
-        content=json.dumps(response), content_type="application/json")
+        content=final_body, content_type=final_type, status=final_status)
 
     if _settings.ADD_DURATION_HEADER:
         resp.__setitem__(_settings.DURATION_HEADER_NAME, str((datetime.now() - batch_start_time).seconds))
     return resp
+
+
+def check_response(response):
+    for r in response:
+       if not( 200 <= r["status_code"] < 300):
+           return r["status_code"], r["body"], r["headers"]["Content-Type"]
+    return 200, "{\"detail\":\"ok\"}", "application/json"
